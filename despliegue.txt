@@ -1,0 +1,2 @@
+gcloud builds submit   --tag us-east1-docker.pkg.dev/geosys-analitica-dev/opt-repo/optimized-mapas .
+gcloud run deploy optimized-mapas   --image us-east1-docker.pkg.dev/geosys-analitica-dev/opt-repo/optimized-mapas   --platform managed   --region us-east1   --allow-unauthenticated

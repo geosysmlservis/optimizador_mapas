@@ -1,0 +1,155 @@
+from google.cloud import storage
+from PIL import Image, UnidentifiedImageError, ExifTags
+from PyPDF2 import PdfReader
+from pdf2image import convert_from_path
+import os
+import tempfile
+import logging
+from flask import Flask, request, jsonify
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+
+# Tamaño máximo para redimensionar imágenes
+MAX_WIDTH = 3072
+MAX_HEIGHT = 3072
+Image.MAX_IMAGE_PIXELS = None
+
+# Configuración del bucket y archivo de seguimiento
+TRACKER_BUCKET = "geosys-archivos"
+TRACKER_FILE = "processed_files_tracker_mapas.txt"
+
+def correct_image_orientation(img):
+    try:
+        for orientation in ExifTags.TAGS.keys():
+            if ExifTags.TAGS[orientation] == 'Orientation':
+                break
+        exif = img._getexif()
+        if exif:
+            orientation_value = exif.get(orientation, None)
+            if orientation_value == 3:
+                img = img.rotate(180, expand=True)
+            elif orientation_value == 6:
+                img = img.rotate(270, expand=True)
+            elif orientation_value == 8:
+                img = img.rotate(90, expand=True)
+    except (AttributeError, KeyError, IndexError):
+        pass
+    return img
+
+def transform_image_to_jpeg(input_path, output_path):
+    try:
+        with Image.open(input_path) as img:
+            img = correct_image_orientation(img)
+            img = img.convert("RGB")
+            img.thumbnail((MAX_WIDTH, MAX_HEIGHT))
+            img.save(output_path, format="JPEG", quality=100)
+    except UnidentifiedImageError as e:
+        raise ValueError(f"No se pudo procesar la imagen: {e}")
+
+def extract_first_page_from_pdf(input_path, output_path):
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            images = convert_from_path(input_path, first_page=1, last_page=1, dpi=300, output_folder=temp_dir)
+            images[0].save(output_path, "JPEG")
+    except Exception as e:
+        raise ValueError(f"Error al procesar el PDF: {e}")
+
+def load_processed_files():
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(TRACKER_BUCKET)
+    blob = bucket.blob(TRACKER_FILE)
+
+    if not blob.exists():
+        logger.info("El archivo de seguimiento no existe, creando uno nuevo.")
+        return set()
+
+    content = blob.download_as_text().strip()
+    return set(content.splitlines())
+
+def update_processed_files(new_processed_files, existing_files):
+    all_files = existing_files.union(new_processed_files)
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(TRACKER_BUCKET)
+    blob = bucket.blob(TRACKER_FILE)
+    blob.upload_from_string("\n".join(sorted(all_files)))
+    logger.info("Archivo de seguimiento actualizado correctamente.")
+
+@app.route("/process", methods=["POST"])
+def process_files():
+    try:
+        request_data = request.get_json()
+        input_bucket_uri = request_data.get("input_bucket")
+        output_bucket_uri = request_data.get("output_bucket")
+        max_files = request_data.get("max_files", 10)
+
+        if not input_bucket_uri or not output_bucket_uri:
+            return jsonify({"error": "Debes especificar input_bucket y output_bucket"}), 400
+
+        input_bucket_name, input_prefix = input_bucket_uri.replace("gs://", "").split("/", 1)
+        output_bucket_name, output_prefix = output_bucket_uri.replace("gs://", "").split("/", 1)
+
+        processed_files = load_processed_files()
+        new_processed_files = set()
+
+        storage_client = storage.Client()
+        input_bucket = storage_client.bucket(input_bucket_name)
+        output_bucket = storage_client.bucket(output_bucket_name)
+
+        blobs = input_bucket.list_blobs(prefix=input_prefix)
+        files_to_process = [
+            blob.name for blob in blobs
+            if blob.name not in processed_files and not blob.name.endswith('/')
+        ][:max_files]
+
+        if not files_to_process:
+            logger.info("No hay archivos nuevos para procesar.")
+            return jsonify({"message": "No hay archivos nuevos para procesar."}), 200
+
+        logger.info(f"Archivos a procesar: {files_to_process}")
+
+        for file_name in files_to_process:
+            logger.info(f"Procesando archivo: {file_name}")
+            input_blob = input_bucket.blob(file_name)
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                file_name_only = os.path.basename(file_name)
+                input_file_path = os.path.join(temp_dir, file_name_only)
+                output_file_path = os.path.join(temp_dir, f"{os.path.splitext(file_name_only)[0]}.jpg")
+
+                try:
+                    input_blob.download_to_filename(input_file_path)
+                    mime_type = input_blob.content_type
+
+                    if mime_type in ["image/tiff", "image/tif", "image/png", "image/jpeg"]:
+                        transform_image_to_jpeg(input_file_path, output_file_path)
+                    elif mime_type == "application/pdf":
+                        extract_first_page_from_pdf(input_file_path, output_file_path)
+                    else:
+                        logger.warning(f"Tipo de archivo no soportado: {mime_type}")
+                        continue
+
+                    output_blob_name = os.path.join(output_prefix, os.path.basename(output_file_path))
+                    output_blob = output_bucket.blob(output_blob_name)
+                    output_blob.upload_from_filename(output_file_path)
+
+                    logger.info(f"Archivo procesado subido a: gs://{output_bucket_name}/{output_blob_name}")
+
+                    new_processed_files.add(file_name)
+                except Exception as e:
+                    logger.error(f"Error procesando {file_name}: {e}")
+
+        update_processed_files(new_processed_files, processed_files)
+
+        logger.info(f"Total de archivos procesados: {len(new_processed_files)}")
+        return jsonify({"message": f"Se procesaron {len(new_processed_files)} archivos."}), 200
+
+    except Exception as e:
+        logger.error(f"Error global: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))

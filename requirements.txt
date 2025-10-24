@@ -1,0 +1,8 @@
+Flask
+google-cloud-storage
+Pillow
+PyPDF2
+pdf2image
+opencv-python-headless
+numpy
+google-cloud-tasks
