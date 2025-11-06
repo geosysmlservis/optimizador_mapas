@@ -1,0 +1,23 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build','-t','us-central1-docker.pkg.dev/$PROJECT_ID/opt-repo/opt-gis','.']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push','us-central1-docker.pkg.dev/$PROJECT_ID/opt-repo/opt-gis']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      [
+        'run','deploy','optimized-gis',
+        '--image','us-central1-docker.pkg.dev/$PROJECT_ID/opt-repo/opt-gis',
+        '--region','us-central1',
+        '--platform','managed',
+        '--allow-unauthenticated'
+      ]
+
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/opt-repo/opt-gis'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
