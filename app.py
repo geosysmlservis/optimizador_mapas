@@ -14,12 +14,12 @@ import numpy as np
 from pdf2image import convert_from_path
 
 # Config
-DEFAULT_TRACKER_BUCKET_NAME = "geosys-archivos"
+DEFAULT_TRACKER_BUCKET_NAME = "archivos_geosys"
 TRACKER_FILE = "lista_procesados_completos_mapas.txt"
-GCP_PROJECT = "geosys-analitica-dev"
-GCP_REGION = "us-east1"
-CLOUD_TASK_QUEUE = "opt-mapas"
-WORKER_URL = "https://optimized-mapas-439188544158.us-east1.run.app/process_single"
+GCP_PROJECT = "extrac-datos-geosys-production"
+GCP_REGION = "us-central1"
+CLOUD_TASK_QUEUE = "opt-gis"
+WORKER_URL = "" #agregar /process_single
 Image.MAX_IMAGE_PIXELS = None
 TARGET_DPI = 80
 MAX_FILE_SIZE = 31457280  # 30 MB
